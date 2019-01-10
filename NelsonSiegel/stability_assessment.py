@@ -5,6 +5,10 @@ import CONFIG
 from datapreparation.adaptive_sampling import creating_sample
 from optimizator.simultaneous_min import iter_minimizer
 from optimizator.gridsearch import grid_search
+import dask.multiprocessing
+import dask.threaded
+import dask.local
+from dask import compute, delayed
 
 class stability_assession():
     
@@ -16,9 +20,22 @@ class stability_assession():
         self.beta_init = beta_init
         self.settle_dates = pd.date_range(start=self.start_date, end=self.end_date, 
                                   normalize=True, freq=self.freq, closed='right')
-        
-        
-    def optimize(self, data, **kwargs):
+        self.thresholds = baskets
+    
+    def __str__(self):
+        s = f"""The curve optimization is initialized for parameters below:
+		       Start date: {self.start_date}
+			   End date: {self.end_date}
+			   Thresholds: {self.thresholds}
+			   Initial beta: {self.beta_init}
+			   Remaining deal weight: {CONFIG.RHO}
+			   Minimum number of deals: {CONFIG.MIN_N_DEAL}
+			   Weight scheme: { CONFIG.WEIGHT_SCHEME}
+			   
+		   """
+        return s
+    
+    def optimize(self, data, settle_date = None, **kwargs):
         '''
         Parameters
         -------------
@@ -40,10 +57,11 @@ class stability_assession():
         theor_maturities = np.linspace(0.001, longest_maturity_year, 10000)
         #Tuple of arguments for loss function 
         loss_args = (data, self.coupons_cf, self.streak_data, CONFIG.RHO, CONFIG.WEIGHT_SCHEME)
+        options = {'maxiter': 500, 'eps': 9e-5, 'disp': True}
         #optimization
         if self.solver_type == 'simult':
             res_ = iter_minimizer(Loss=self.loss, beta_init=self.beta_init, method=self.method,
-                           loss_args=loss_args, bounds=bounds, max_deal_span=max_deal_span, **kwargs)
+                           loss_args=loss_args, bounds=bounds, max_deal_span=max_deal_span, options = options, **kwargs)
             beta_best = res_.x
         else:
             
@@ -51,10 +69,10 @@ class stability_assession():
             bounds = bounds[:-1]
             grid = grid_search(tau_grid=self.tau_grid, Loss=self.loss, 
                                loss_args=loss_args, beta_init=beta_init)
-            beta_best = grid.fit(return_frame=False, method=self.method, 
+            beta_best, loss_frame = grid.fit(return_frame=False, method=self.method, 
                                  num_workers=1, bounds=bounds,  **kwargs) 
          #constraints=constr
-        return beta_best, theor_maturities
+        return beta_best, theor_maturities, loss_frame
             
     def compute_curves(self, coupons_cf, streak_data, loss, method='SLSQP', solver_type='simult',
                        teta_min=CONFIG.TETA_MIN, teta_max=CONFIG.TETA_MAX, tau_grid=None, **kwargs):
@@ -62,8 +80,13 @@ class stability_assession():
         self.solver_type = solver_type
         self.params = pd.Series()
         self.tenors = []
+        self.loss_frame = pd.Series()
+        self.tasks = []
+        self.results = []
+        
         self.coupons_cf, self.streak_data = (coupons_cf, streak_data)
         self.method, self.teta_min, self.teta_max, self.loss = (method, teta_min, teta_max, loss)
+        
         if tau_grid is None:
             self.tau_grid = np.append(np.arange(self.teta_min, 2, 0.1), np.arange(2, self.teta_max, 0.5))
         else: 
@@ -77,15 +100,21 @@ class stability_assession():
                         print(settle_date)
                     
             data = creating_sample(settle_date, self.big_dataframe, min_n_deal=CONFIG.MIN_N_DEAL, 
-                                   time_window=CONFIG.TIME_WINDOW)
+                                   time_window=CONFIG.TIME_WINDOW, thresholds = self.thresholds)
             #saving data in dictionary for potential further usage
             if not hasattr(self, 'data_different_dates'):
                 self.data_different_dates = {}
             self.data_different_dates[settle_date] = data
+            #lazy computations - apendd tasks
+            self.tasks.append(delayed(self.optimize)(data, settle_date))
+        
+        #optimization and saving results for work
+        self.results = compute(*self.tasks, get=dask.multiprocessing.get, num_workers=8)    
+        
+        for betas, date in self.results:
+            self.params[date] = betas
             #optimization and saving results for work
-            beta_best, theor_maturities = self.optimize(data,  **kwargs)
-            self.tenors.append(theor_maturities)
-            self.params[settle_date] = beta_best
+            
         #to save space delete calendar data
         del self.coupons_cf, self.streak_data
         return self
