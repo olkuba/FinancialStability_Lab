@@ -69,7 +69,7 @@ def draw(beta, df, theor_maturities, title_date,
         #size of points; depends on weight of transaction
         s = (weight(beta, df, weight_scheme=weight_scheme) / 
              weight(beta, df, weight_scheme=weight_scheme).sum())
-        ax.scatter(x_scatter, y_scatter, s=s * 15 * 1e3,
+        ax.scatter(x_scatter, y_scatter, s=100*(s * 100)**2,
                    facecolors='none', edgecolors='grey', alpha=0.9)
     #setting labels, ticks, legend and title
     ax.set_title(f'Curves at {title_date} for {df.shape[0]} deals')
