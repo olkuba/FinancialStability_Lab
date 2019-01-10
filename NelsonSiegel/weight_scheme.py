@@ -37,7 +37,30 @@ class WeightScheme():
         self.n_cuts = n_cuts
         self.rho = rho
         
-    #different weights and their calculation:    
+    #different weights and their calculation: 
+    def complex_new_av(self):
+        #weight of each slice
+        W_gr = 1 / self.df['bond_maturity_type'].nunique()
+         #weight deals depending on mean reverse span
+        rev_span_mean = self.df.reverse_span.mean()
+        for mat_type in self.df['bond_maturity_type'].unique():
+            
+		    deals = self.df[self.df['bond_maturity_type'] == mat_type]
+            self.df.loc[self.df['bond_maturity_type'] == mat_type, 'rho'] = self.rho_func2(self.last_weight, self.df.reverse_span.max())
+		    Wq = rev_span_weight2(self.df.loc[self.df['bond_maturity_type'] == mat_type, 'reverse_span'],
+                                 self.df.loc[self.df['bond_maturity_type'] == mat_type, 'rho'])
+            
+			#normalize by volume -- depending on subsample
+            Vq = np.log(deals['volume_kzt']) / np.log(self.df['volume_kzt']).sum()
+            W = (Wq * Vq).values
+            if W.shape[0] > 1:
+                W = W / W.sum()
+            else:
+                W = 1
+            self.df.loc[self.df['bond_maturity_type'] == mat_type, 'weight'] =  W * W_gr
+
+        return self.df['weight'].values
+      
     def complex_volume(self):
         self.df['vol_sector'] = equal_slicing_maturity(self.df, self.n_cuts)
         vol_sector = self.df.groupby('vol_sector').volume_kzt.sum()
